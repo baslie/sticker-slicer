@@ -178,22 +178,30 @@
         }
 
         // --- Группировка обводок ---
+        // countSeen/Missed   — число под-путей (для точности по цвету);
+        // contourSeen/Missed — число КОНТУРОВ так, как их считает экспортёр:
+        //                      compound-путь = ОДИН контур (collectCut пушит его
+        //                      целиком), отдельный path = один контур.
         var groups = {}, order = [];
-        function addStroke(p, ctx) {
+        function addStroke(p, ctx, isContour) {
             var info;
             try { info = strokeKeyLabel(p.strokeColor); } catch (e) { info = null; }
             if (!info) return;
             if (!groups[info.key]) {
                 groups[info.key] = {
                     key: info.key, label: info.label, kind: info.kind,
-                    countSeen: 0, countMissed: 0, closed: 0, open: 0,
+                    countSeen: 0, countMissed: 0,
+                    contourSeen: 0, contourMissed: 0, closed: 0, open: 0,
                     sampleBboxMm: null, sampleStrokeWidthPt: null
                 };
                 order.push(info.key);
             }
             var g = groups[info.key];
             if (ctx.sees) g.countSeen++; else g.countMissed++;
-            try { if (p.closed) g.closed++; else g.open++; } catch (e) {}
+            if (isContour) {
+                if (ctx.sees) g.contourSeen++; else g.contourMissed++;
+                try { if (p.closed) g.closed++; else g.open++; } catch (e) {}
+            }
             if (g.sampleStrokeWidthPt == null) {
                 try { g.sampleStrokeWidthPt = Math.round(p.strokeWidth * 100) / 100; } catch (e) {}
             }
@@ -213,15 +221,23 @@
             try {
                 for (var i = 0; i < c.pathItems.length; i++) {
                     var p = c.pathItems[i];
-                    try { if (p.stroked) addStroke(p, ctx); } catch (e) {}
+                    // отдельный path = один контур
+                    try { if (p.stroked) addStroke(p, ctx, true); } catch (e) {}
                 }
             } catch (e) {}
             try {
                 for (var cc = 0; cc < c.compoundPathItems.length; cc++) {
                     var cp = c.compoundPathItems[cc];
+                    // compound = ОДИН контур: первый stroked-ребёнок несёт контур,
+                    // остальные считаем только как под-пути (для цвета)
+                    var repTaken = false;
                     for (var k = 0; k < cp.pathItems.length; k++) {
-                        try { if (cp.pathItems[k].stroked) addStroke(cp.pathItems[k], ctx); }
-                        catch (e) {}
+                        try {
+                            if (cp.pathItems[k].stroked) {
+                                addStroke(cp.pathItems[k], ctx, !repTaken);
+                                repTaken = true;
+                            }
+                        } catch (e) {}
                     }
                 }
             } catch (e) {}
@@ -333,27 +349,27 @@
             }
         }
 
-        // --- Группы → массив, сортировка по countSeen ---
+        // --- Группы → массив, сортировка по числу КОНТУРОВ ---
         for (var oi = 0; oi < order.length; oi++) rec.strokeGroups.push(groups[order[oi]]);
-        rec.strokeGroups.sort(function (a, b) { return b.countSeen - a.countSeen; });
+        rec.strokeGroups.sort(function (a, b) { return b.contourSeen - a.contourSeen; });
 
         // --- Кандидат cut-цвета: spot в приоритете, иначе самый массовый ---
         var candidate = null;
         for (var gi = 0; gi < rec.strokeGroups.length; gi++) {
             var grp = rec.strokeGroups[gi];
-            if (grp.kind === "spot" && grp.countSeen > 0) {
-                if (!candidate || grp.countSeen > candidate.countSeen) candidate = grp;
+            if (grp.kind === "spot" && grp.contourSeen > 0) {
+                if (!candidate || grp.contourSeen > candidate.contourSeen) candidate = grp;
             }
         }
         if (!candidate) {
             for (var gj = 0; gj < rec.strokeGroups.length; gj++) {
-                if (rec.strokeGroups[gj].countSeen > 0) { candidate = rec.strokeGroups[gj]; break; }
+                if (rec.strokeGroups[gj].contourSeen > 0) { candidate = rec.strokeGroups[gj]; break; }
             }
         }
         if (candidate) {
             rec.candidateCut = {
                 key: candidate.key, label: candidate.label, kind: candidate.kind,
-                count: candidate.countSeen, missed: candidate.countMissed,
+                count: candidate.contourSeen, missed: candidate.contourMissed,
                 closed: candidate.closed, open: candidate.open
             };
         }
@@ -412,7 +428,7 @@
             var comparable = 0;
             for (var ci = 0; ci < rec.strokeGroups.length; ci++) {
                 var sg = rec.strokeGroups[ci];
-                if (sg.countSeen >= Math.max(2, rec.candidateCut.count * 0.3)) comparable++;
+                if (sg.contourSeen >= Math.max(2, rec.candidateCut.count * 0.3)) comparable++;
             }
             if (comparable > 1) {
                 check("WARN", "ambiguous_cut_color",
@@ -514,11 +530,13 @@
             if (r.checks[ci2].level === "PASS") continue;
             T("    " + r.checks[ci2].level + ": " + r.checks[ci2].message);
         }
-        // Все stroke-группы (чтобы выбрать cut-цвет вручную, если надо)
-        T("    Группы обводок:");
+        // Все stroke-группы (чтобы выбрать cut-цвет вручную, если надо).
+        // Формат: [контуров / под-путей]
+        T("    Группы обводок [контуров / под-путей]:");
         for (var gi2 = 0; gi2 < r.strokeGroups.length; gi2++) {
             var g = r.strokeGroups[gi2];
-            T("      [" + g.countSeen + (g.countMissed ? "+" + g.countMissed + " скрыто" : "") + "] " +
+            T("      [" + g.contourSeen + " / " + g.countSeen +
+              (g.countMissed ? " (+" + g.countMissed + " скрыто)" : "") + "] " +
               g.label +
               (g.sampleStrokeWidthPt != null ? "  sw=" + g.sampleStrokeWidthPt + "pt" : "") +
               (g.sampleBboxMm ? "  bbox≈" + g.sampleBboxMm.w + "x" + g.sampleBboxMm.h + "мм" : ""));
