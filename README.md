@@ -10,28 +10,32 @@
 sticker-slicer/
 ├── README.md
 ├── .gitignore
-├── scripts/
-│   ├── StickerCore.jsx          — общий движок экспорта (без UI), подключается рядом
-│   ├── StickerExporter.jsx      — экспортёр одного открытого документа (диалог)
-│   ├── BatchExporter.jsx        — пакетный экспорт всех .ai из папки
-│   ├── PreflightBatch.jsx       — пакетная проверка макетов (PASS/WARN/FAIL)
-│   ├── DiagnoseDocument.jsx     — дамп структуры .ai в текстовый отчёт
-│   ├── InspectCutCandidates.jsx — поиск «спрятанного» контура реза
-│   ├── InspectCutGeometry.jsx   — геометрия контуров реза + перекрытия
-│   ├── FixClipCut.jsx           — навесить рез на невидимый clip-путь
-│   └── CloseOpenCutPaths.jsx    — замкнуть открытые контуры реза
+├── scripts/                       — операционный набор (проверить → выгрузить)
+│   ├── StickerCore.jsx            — общий движок экспорта (без UI), подключается рядом
+│   ├── StickerExporter.jsx        — экспортёр одного открытого документа (диалог)
+│   ├── BatchExporter.jsx          — пакетный экспорт всех .ai из папки
+│   ├── PreflightBatch.jsx         — пакетная проверка макетов (PASS/WARN/FAIL)
+│   ├── fixes/                     — починка макетов перед экспортом (по необходимости)
+│   │   ├── FixClipCut.jsx         — навесить рез на невидимый clip-путь
+│   │   └── CloseOpenCutPaths.jsx  — замкнуть открытые контуры реза
+│   └── diagnostics/              — read-only разбор странных файлов (редко)
+│       ├── DiagnoseDocument.jsx   — дамп структуры .ai в текстовый отчёт
+│       ├── InspectCutCandidates.jsx — поиск «спрятанного» контура реза
+│       └── InspectCutGeometry.jsx — геометрия контуров реза + перекрытия
 └── sources/
-    ├── NAKL_LOVE_180.ai        — макет «LOVE» (180 мм)
-    └── NAKL_COLOR_260.ai       — макет «COLOR» (260 мм)
+    ├── NAKL_LOVE_180.ai          — макет «LOVE» (180 мм)
+    └── NAKL_COLOR_260.ai         — макет «COLOR» (260 мм)
 ```
 
 Скрипты работают с любым `.ai`-документом — не только с тем, что лежит рядом
 в `sources/`. Папка `sources/` — просто оригиналы текущих наборов.
 
-`StickerCore.jsx` — общий движок (группировка обводок, авто-выбор реза, экспорт
-одного документа). Его подключают через `$.evalFile` и `StickerExporter.jsx`
-(интерактивный), и `BatchExporter.jsx` (пакетный) — логика экспорта одна на оба,
-поэтому фиксы не расходятся. Все три файла должны лежать в одной папке `scripts/`.
+**Зависимости.** `StickerCore.jsx` — общий движок (группировка обводок, авто-выбор
+реза, экспорт одного документа). Его подключают через `$.evalFile` и
+`StickerExporter.jsx`, и `BatchExporter.jsx` — логика экспорта одна на оба, поэтому
+фиксы не расходятся. Эти три файла должны лежать в **одной папке** `scripts/`. Скрипты
+в `fixes/` и `diagnostics/` самостоятельные (ничего не подключают) — их расположение
+не важно, они вынесены в подпапки просто для порядка.
 
 ---
 
@@ -208,7 +212,7 @@ ExtendScript не имеет нативного `JSON.stringify` и `Date.protot
 
 ---
 
-## `scripts/DiagnoseDocument.jsx`
+## `scripts/diagnostics/DiagnoseDocument.jsx`
 
 Диагностический дамп структуры активного `.ai`-документа. Нужен, когда
 приходит новый макет и непонятно, как настроить экспортёр.
@@ -234,7 +238,7 @@ ExtendScript не имеет нативного `JSON.stringify` и `Date.protot
 ### Запуск
 
 1. Открыть `.ai`-файл в Adobe Illustrator.
-2. `File → Scripts → Other Script…` → выбрать `scripts/DiagnoseDocument.jsx`.
+2. `File → Scripts → Other Script…` → выбрать `scripts/diagnostics/DiagnoseDocument.jsx`.
 3. По завершении скрипт покажет путь к сохранённому отчёту.
 
 ---
@@ -294,7 +298,7 @@ ExtendScript не имеет нативного `JSON.stringify` и `Date.protot
 
 ---
 
-## `scripts/InspectCutCandidates.jsx`
+## `scripts/diagnostics/InspectCutCandidates.jsx`
 
 Точечная диагностика **одного** проблемного файла, когда `PreflightBatch`
 нашёл подозрительно мало контуров реза (например, 48 открытых линий вместо
@@ -315,12 +319,12 @@ ExtendScript не имеет нативного `JSON.stringify` и `Date.protot
 ### Запуск
 
 1. Открыть проблемный `.ai` в Illustrator.
-2. `File → Scripts → Other Script…` → выбрать `scripts/InspectCutCandidates.jsx`.
+2. `File → Scripts → Other Script…` → выбрать `scripts/diagnostics/InspectCutCandidates.jsx`.
 3. Отчёт `<имя>__inspect.txt` ляжет рядом с файлом — переслать в чат.
 
 ---
 
-## `scripts/FixClipCut.jsx`
+## `scripts/fixes/FixClipCut.jsx`
 
 Чинит макеты, где контур реза задан **невидимым clipping-путём** группы
 стикера (без обводки и заливки) — `StickerExporter` такой рез не видит.
@@ -341,13 +345,13 @@ ExtendScript не имеет нативного `JSON.stringify` и `Date.protot
 ### Запуск
 
 1. Открыть проблемный `.ai` в Illustrator.
-2. `File → Scripts → Other Script…` → выбрать `scripts/FixClipCut.jsx`.
+2. `File → Scripts → Other Script…` → выбрать `scripts/fixes/FixClipCut.jsx`.
 3. Открыть полученный `<имя>__cut.ai`, запустить `StickerExporter` и выбрать
    контур реза = **Spot "CutContour"**.
 
 ---
 
-## `scripts/CloseOpenCutPaths.jsx`
+## `scripts/fixes/CloseOpenCutPaths.jsx`
 
 Замыкает **открытые** контуры реза (с микрощелью), из-за которых стикер
 обрезается с рваным краем. Делает то же, что ручной `Ctrl+J` («Join») в
@@ -364,7 +368,7 @@ Illustrator, но автоматически и по всему файлу — �
 ### Запуск
 
 1. Открыть `.ai` в Illustrator (актуально для `NAKL_JDM_300`, `NAKL_KOTY_PRODUKTY`).
-2. `File → Scripts → Other Script…` → выбрать `scripts/CloseOpenCutPaths.jsx`.
+2. `File → Scripts → Other Script…` → выбрать `scripts/fixes/CloseOpenCutPaths.jsx`.
 3. Экспортировать стикеры уже из `<имя>__closed.ai`.
 
 ---
