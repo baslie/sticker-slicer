@@ -429,6 +429,33 @@
         return result;
     }
 
+    // Снять обводку cut-цвета у всей графики во временном слое. Нужна потому,
+    // что линия реза может быть спрятана ВНУТРИ группы стикера: тогда группа
+    // дублируется целиком, и без зачистки magenta-линия реза проступила бы по
+    // краю PNG. Заливку не трогаем (magenta-заливка может быть частью дизайна).
+    function stripCutStrokes(container) {
+        try {
+            for (var i = 0; i < container.pathItems.length; i++) {
+                var p = container.pathItems[i];
+                if (isCutPath(p)) { try { p.stroked = false; } catch (e) {} }
+            }
+        } catch (e) {}
+        try {
+            for (var c = 0; c < container.compoundPathItems.length; c++) {
+                var cp = container.compoundPathItems[c];
+                for (var k = 0; k < cp.pathItems.length; k++) {
+                    if (isCutPath(cp.pathItems[k])) {
+                        try { cp.pathItems[k].stroked = false; } catch (e) {}
+                    }
+                }
+            }
+        } catch (e) {}
+        try {
+            for (var g = 0; g < container.groupItems.length; g++)
+                stripCutStrokes(container.groupItems[g]);
+        } catch (e) {}
+    }
+
     // ---------- Опции экспорта PNG --------------------------------------
     var exportOpts = new ExportOptionsPNG24();
     exportOpts.transparency     = true;
@@ -514,6 +541,10 @@
                     // не падаем, продолжаем
                 }
             }
+
+            // 3.5) Снять обводку cut-цвета у дублированной графики — иначе
+            //      линия реза, спрятанная внутри группы стикера, проступит в PNG.
+            stripCutStrokes(tempLayer);
 
             // 4) Дублируем cut-контур → белая подложка (под картинками)
             var whiteBacking = cutItem.duplicate(tempLayer,
