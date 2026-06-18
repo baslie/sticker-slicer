@@ -379,6 +379,16 @@
         try { return Math.abs((b[2] - b[0]) * (b[1] - b[3])); } catch (e) { return 0; }
     }
 
+    // ВИДИМЫЕ границы объекта (учитывают клиппинг). Для обрезанной группы
+    // geometricBounds возвращает размер НЕобрезанной картинки — она может
+    // торчать в соседнюю ячейку и затягивать соседний стикер в кадр.
+    // visibleBounds возвращает размер с учётом обрезки — то, что реально видно.
+    function itemBounds(it) {
+        try { var vb = it.visibleBounds; if (vb) return vb; } catch (e) {}
+        try { return it.geometricBounds; } catch (e2) {}
+        return null;
+    }
+
     // Группа без собственного оформления, которую безопасно «разобрать» на
     // детей: их геометрия в координатах документа не меняется. Клиппинг,
     // прозрачность и blend-режим на уровне группы — разбирать НЕЛЬЗЯ (потеряем
@@ -405,8 +415,8 @@
                 if (it === currentCutItem) continue;
                 // соседние cut-контуры — пропустить
                 if (isCutItem(it)) continue;
-                var ib;
-                try { ib = it.geometricBounds; } catch (e) { continue; }
+                var ib = itemBounds(it);
+                if (!ib) continue;
                 if (!bboxIntersect(ib, bbox)) continue;
                 // Разбираем только заметно большие простые группы; мелкие
                 // (по-стикерные) и любые с оформлением берём целиком.
