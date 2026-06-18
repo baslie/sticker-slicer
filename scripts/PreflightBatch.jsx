@@ -159,8 +159,10 @@
             candidateCut: null,
             filenameNumber: filenameNumber(doc.name),
             strokesInSublayers: 0,
-            suspectedFullSheet: [],
+            fullSheetFills: [],   // настоящие подложки во весь лист (path/raster/placed)
+            megaGroups: [],       // группы-контейнеры во весь лист (риск O(n²) экспорта)
             imagesCount: 0,
+            contentItems: 0,      // любая графика: группы + пути(не рез) + raster/placed
             checks: [],
             verdict: "PASS"
         };
@@ -261,13 +263,11 @@
         }
 
         // --- Обход слоёв верхнего уровня ---
-        var hasSublayers = false;
         for (var li = 0; li < doc.layers.length; li++) {
             var lay = doc.layers[li];
             var exportable = lay.visible && !lay.locked;
             var subCount = 0;
             try { subCount = lay.layers.length; } catch (e) {}
-            if (subCount > 0) hasSublayers = true;
 
             rec.layersTop.push({
                 name: String(lay.name),
@@ -283,6 +283,12 @@
             });
 
             rec.imagesCount += lay.placedItems.length + lay.rasterItems.length;
+            // Контент = любая графика, которую экспортёр сможет вклеить в стикер:
+            // группы, картинки + пути сверх контуров реза (на exportable-слоях)
+            if (exportable) {
+                rec.contentItems += lay.groupItems.length + lay.placedItems.length +
+                                    lay.rasterItems.length;
+            }
 
             // Обводки прямо в слое и его группах видит экспортёр, если слой exportable
             scanContainer(lay, { sees: exportable, inSub: false });
@@ -293,7 +299,9 @@
                     rec.strokesInSublayers += countSublayerStrokes(lay.layers[s]);
             } catch (e) {}
 
-            // Фон во весь лист: верхнеуровневые объекты слоя с bbox ≈ artboard
+            // Верхнеуровневые объекты слоя с bbox ≈ artboard.
+            // Различаем: GroupItem-контейнер (риск медленного экспорта) и
+            // настоящую заливку-подложку (path/compound/raster/placed).
             if (maxAbW > 0 && maxAbH > 0) {
                 try {
                     for (var pi2 = 0; pi2 < lay.pageItems.length; pi2++) {
@@ -303,11 +311,21 @@
                             var iw = ptToMm(ib[2] - ib[0]), ih = ptToMm(ib[1] - ib[3]);
                             if (iw >= FULLSHEET_RATIO * maxAbW &&
                                 ih >= FULLSHEET_RATIO * maxAbH) {
-                                rec.suspectedFullSheet.push({
-                                    layer: String(lay.name),
-                                    type: String(it.typename),
-                                    w_mm: iw, h_mm: ih
-                                });
+                                var tn = String(it.typename);
+                                var entry = { layer: String(lay.name), type: tn,
+                                              w_mm: iw, h_mm: ih };
+                                if (tn === "GroupItem") {
+                                    rec.megaGroups.push(entry);
+                                } else {
+                                    // подложкой считаем только реально залитый
+                                    // объект (рамка/контур во весь лист — лишь
+                                    // обведён, фоном не станет)
+                                    var isFill = true;
+                                    if (tn === "PathItem" || tn === "CompoundPathItem") {
+                                        try { isFill = it.filled; } catch (e) { isFill = true; }
+                                    }
+                                    if (isFill) rec.fullSheetFills.push(entry);
+                                }
                             }
                         } catch (e) {}
                     }
@@ -408,16 +426,25 @@
                   rec.strokesInSublayers + " обводок лежат в ПОДслоях. StickerExporter не обходит подслои — если рез там, экспортёр его не увидит. Разнеси на верхний уровень или дай знать — допишу обход подслоёв.");
         }
 
-        // 8) Фон во весь лист
-        if (rec.suspectedFullSheet.length > 0) {
+        // 8) Настоящий фон во весь лист (залитый объект, не группа-контейнер)
+        if (rec.fullSheetFills.length > 0) {
             check("WARN", "fullsheet_background",
-                  rec.suspectedFullSheet.length + " объект(ов) размером почти во весь лист — могут попасть фоном под каждый стикер. Вынеси их на отдельный слой и добавь в «Исключить слои».");
+                  rec.fullSheetFills.length + " залитых объект(ов) почти во весь лист — попадут фоном под каждый стикер. Вынеси на отдельный слой и добавь в «Исключить слои».");
         }
 
-        // 9) Есть ли картинки
-        if (rec.imagesCount === 0) {
-            check("WARN", "no_images",
-                  "Не найдено raster/placed картинок — проверь, что графика стикеров есть (возможно, она в виде векторных путей).");
+        // 9) Мега-группа: вся графика в одной-двух группах во весь лист.
+        //    Экспортёр дублирует пересекающие объекты целиком на каждый контур —
+        //    при большом числе стикеров это O(n²) и очень медленно.
+        if (rec.megaGroups.length > 0 && rec.candidateCut && rec.candidateCut.count >= 20) {
+            check("WARN", "mega_group_artwork",
+                  "Графика собрана в " + rec.megaGroups.length + " групп(ы) во весь лист при " +
+                  rec.candidateCut.count + " контурах. Экспорт будет дублировать всю графику на каждый стикер — очень медленно. Лучше разгруппировать по стикерам.");
+        }
+
+        // 10) Есть ли вообще графика для вклейки в стикеры
+        if (rec.contentItems === 0) {
+            check("WARN", "no_content",
+                  "Не найдено графики (групп/картинок) на видимых слоях — стикеры рискуют выйти пустыми. Проверь, что арт есть и слой видим.");
         }
 
         // Итоговый вердикт
@@ -478,8 +505,11 @@
               " контуров (замкнутых " + r.candidateCut.closed + ", открытых " + r.candidateCut.open + ")");
         }
         if (r.filenameNumber != null) T("  Число в имени: " + r.filenameNumber);
-        T("  Картинок (raster+placed): " + r.imagesCount);
+        T("  Контента (группы+картинки): " + r.contentItems +
+          "  (raster+placed: " + r.imagesCount + ")");
         if (r.strokesInSublayers > 0) T("  Обводок в подслоях: " + r.strokesInSublayers);
+        if (r.megaGroups.length > 0) T("  Групп во весь лист (мега-группа): " + r.megaGroups.length);
+        if (r.fullSheetFills.length > 0) T("  Залитых подложек во весь лист: " + r.fullSheetFills.length);
         for (var ci2 = 0; ci2 < r.checks.length; ci2++) {
             if (r.checks[ci2].level === "PASS") continue;
             T("    " + r.checks[ci2].level + ": " + r.checks[ci2].message);
