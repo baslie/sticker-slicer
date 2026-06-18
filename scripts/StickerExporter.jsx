@@ -374,19 +374,49 @@
         return !(a[2] < b[0] || a[0] > b[2] || a[3] > b[1] || a[1] < b[3]);
     }
 
-    // Найти все pageItems на других слоях, которые пересекают bbox
+    // Площадь bbox в pt² — для оценки «группа сильно больше контура»
+    function boxArea(b) {
+        try { return Math.abs((b[2] - b[0]) * (b[1] - b[3])); } catch (e) { return 0; }
+    }
+
+    // Группа без собственного оформления, которую безопасно «разобрать» на
+    // детей: их геометрия в координатах документа не меняется. Клиппинг,
+    // прозрачность и blend-режим на уровне группы — разбирать НЕЛЬЗЯ (потеряем
+    // обрезку/вид), такие группы дублируем целиком.
+    function isPlainContainer(grp) {
+        try { if (grp.clipped) return false; } catch (e) {}
+        try { if (grp.opacity !== undefined && grp.opacity < 99.5) return false; } catch (e) {}
+        try {
+            if (grp.blendingMode !== undefined &&
+                grp.blendingMode !== BlendModes.NORMAL) return false;
+        } catch (e) {}
+        return true;
+    }
+
+    // Найти pageItems, пересекающие bbox. Большие простые группы-контейнеры
+    // разбираем рекурсивно на детей — иначе на каждый из сотен контуров
+    // дублировалась бы вся графика листа (O(n²), очень медленно на тяжёлых .ai).
     function collectIntersectingItems(bbox, currentCutItem, layersToSkip) {
         var result = [];
+        var cutArea = boxArea(bbox);
         function walk(parent) {
             for (var i = 0; i < parent.pageItems.length; i++) {
                 var it = parent.pageItems[i];
                 if (it === currentCutItem) continue;
                 // соседние cut-контуры — пропустить
                 if (isCutItem(it)) continue;
-                try {
-                    var ib = it.geometricBounds;
-                    if (bboxIntersect(ib, bbox)) result.push(it);
-                } catch (e) {}
+                var ib;
+                try { ib = it.geometricBounds; } catch (e) { continue; }
+                if (!bboxIntersect(ib, bbox)) continue;
+                // Разбираем только заметно большие простые группы; мелкие
+                // (по-стикерные) и любые с оформлением берём целиком.
+                if (it.typename === "GroupItem" &&
+                    isPlainContainer(it) &&
+                    boxArea(ib) > cutArea * 4) {
+                    walk(it);
+                } else {
+                    result.push(it);
+                }
             }
         }
         for (var l = 0; l < doc.layers.length; l++) {
