@@ -46,6 +46,7 @@
         exportScalePercent: 200,
         fileNamePrefix:     "sticker_",
         sizesFileName:      "sizes.json",
+        exportStickers:     true,          // false — выгружать только лист
         exportSheet:        true,
         sheetMode:          "clean",       // "clean" | "raw" | "both"
         sheetFileName:      "sheet",
@@ -105,6 +106,10 @@
     var edExclude = grpExcl.add("edittext", undefined, "MARKS CUT");
     edExclude.preferredSize.width = 160;
 
+    var grpStick = pnl.add("group");
+    var cbStick = grpStick.add("checkbox", undefined, "Экспортировать стикеры по отдельности");
+    cbStick.value = SETTINGS.exportStickers;
+
     var grpSheet = pnl.add("group");
     var cbSheet = grpSheet.add("checkbox", undefined, "Экспортировать лист целиком");
     cbSheet.value = SETTINGS.exportSheet;
@@ -125,9 +130,15 @@
     SETTINGS.paddingMm          = parseFloat(edPad.text)   || SETTINGS.paddingMm;
     SETTINGS.exportScalePercent = parseFloat(edScale.text) || SETTINGS.exportScalePercent;
 
+    SETTINGS.exportStickers   = cbStick.value;
     SETTINGS.exportSheet      = cbSheet.value;
     SETTINGS.sheetMode        = ["clean", "raw", "both"][ddSheet.selection.index];
     SETTINGS.sheetJpegQuality = parseFloat(edJpeg.text) || SETTINGS.sheetJpegQuality;
+
+    if (!SETTINGS.exportStickers && !SETTINGS.exportSheet) {
+        alert("Нечего выгружать: сняты обе галки — и стикеры, и лист целиком.");
+        return;
+    }
 
     var excludeSet = {};
     var exclParts = String(edExclude.text || "").split(",");
@@ -187,13 +198,15 @@
             // Авто-определение цвета реза
             var sg = SC_collectStrokeGroups(d);
             var key = SC_pickCutCandidate(sg.groups, sg.keysOrder);
-            if (!key) {
+            if (!key && SETTINGS.exportStickers) {
                 rec.skipped = true; rec.reason = "не найден контур реза (нет обводок)";
                 filesSkipped++;
                 continue; // rec запишется и документ закроется в finally
             }
-            var chosenGroup = sg.groups[key];
-            rec.cut_color = chosenGroup.label;
+            // Только лист: рез не обязателен — без него просто не будет
+            // stickers_area_mm в отчёте.
+            var chosenGroup = key ? sg.groups[key] : null;
+            rec.cut_color = chosenGroup ? chosenGroup.label : null;
 
             // Подпапка по имени файла (перезапись: чистим старые PNG)
             var subF = new Folder(outRoot.fsName + "/" + base);
@@ -204,9 +217,13 @@
             for (var op = 0; op < oldFiles.length; op++) {
                 try {
                     var oldName = oldFiles[op].name;
-                    if (oldFiles[op] instanceof File &&
-                        (oldName.indexOf(SETTINGS.fileNamePrefix) === 0 ||
-                         oldName.indexOf(SETTINGS.sheetFileName) === 0)) {
+                    if (!(oldFiles[op] instanceof File)) continue;
+                    // Чистим только то, что этот прогон перезапишет: иначе
+                    // режим «только лист» стирал бы стикеры прошлого прогона.
+                    var isOldSticker = oldName.indexOf(SETTINGS.fileNamePrefix) === 0;
+                    var isOldSheet   = oldName.indexOf(SETTINGS.sheetFileName)  === 0;
+                    if ((isOldSticker && SETTINGS.exportStickers) ||
+                        (isOldSheet   && SETTINGS.exportSheet)) {
                         oldFiles[op].remove();
                     }
                 } catch (eRm) {}
@@ -218,7 +235,9 @@
                 return function (idx, total, stage) {
                     bar.maxvalue = total || 1; bar.value = idx;
                     stStatus.text = label + ": " +
-                        (stage ? stage : ("стикер " + idx + " / " + total));
+                        (stage ? stage : (SETTINGS.exportStickers
+                            ? ("стикер " + idx + " / " + total)
+                            : "чтение контуров реза…"));
                     win.update();
                 };
             })(fileLabel);
@@ -232,8 +251,8 @@
             totalSheets += rec.sheets;
             totalExported += res.exported;
             if (rec.errors.length) filesWithErrors++;
-            if (res.exported > 0) filesOk++;
-            else if (!rec.skipped) { rec.skipped = true; rec.reason = "0 стикеров (" +
+            if (res.exported > 0 || rec.sheets > 0) filesOk++;
+            else if (!rec.skipped) { rec.skipped = true; rec.reason = "ничего не выгружено (" +
                      (rec.errors.length ? "ошибки" : "контуры не найдены") + ")"; filesSkipped++; }
 
         } catch (err) {
@@ -257,6 +276,7 @@
             white_outline_mm:     SETTINGS.whiteOutlineMm,
             padding_mm:           SETTINGS.paddingMm,
             export_scale_percent: SETTINGS.exportScalePercent,
+            export_stickers:      SETTINGS.exportStickers,
             export_sheet:         SETTINGS.exportSheet,
             sheet_mode:           SETTINGS.exportSheet ? SETTINGS.sheetMode : null,
             sheet_format:         SETTINGS.exportSheet ? "jpeg" : null,
@@ -328,7 +348,8 @@
         var head = (r.skipped ? "[ПРОПУСК] " : "[OK]      ") + r.file;
         txt.push(head);
         if (r.cut_color) txt.push("    рез: " + r.cut_color);
-        txt.push("    стикеров: " + r.exported + " / " + r.total);
+        if (SETTINGS.exportStickers) txt.push("    стикеров: " + r.exported + " / " + r.total);
+        else txt.push("    стикеров: пропущены (режим «только лист»), контуров реза: " + r.total);
         if (r.sheets > 0) {
             txt.push("    лист: " + r.sheets + " JPEG" +
                      (r.sheet_size_mm ? "  (" + r.sheet_size_mm.width + " × " +

@@ -34,6 +34,7 @@
         exportScalePercent: 200,
         fileNamePrefix:     "sticker_",
         sizesFileName:      "sizes.json",
+        exportStickers:     true,          // false — выгружать только лист
         exportSheet:        true,
         sheetMode:          "clean",       // "clean" | "raw" | "both"
         sheetFileName:      "sheet",
@@ -89,6 +90,10 @@
     var edExclude = grpExcl.add("edittext", undefined, "MARKS CUT");
     edExclude.preferredSize.width = 160;
 
+    var grpStick = pnl.add("group");
+    var cbStick = grpStick.add("checkbox", undefined, "Экспортировать стикеры по отдельности");
+    cbStick.value = SETTINGS.exportStickers;
+
     var grpSheet = pnl.add("group");
     var cbSheet = grpSheet.add("checkbox", undefined, "Экспортировать лист целиком");
     cbSheet.value = SETTINGS.exportSheet;
@@ -114,9 +119,15 @@
     SETTINGS.paddingMm          = parseFloat(edPad.text)   || SETTINGS.paddingMm;
     SETTINGS.exportScalePercent = parseFloat(edScale.text) || SETTINGS.exportScalePercent;
 
+    SETTINGS.exportStickers   = cbStick.value;
     SETTINGS.exportSheet      = cbSheet.value;
     SETTINGS.sheetMode        = ["clean", "raw", "both"][ddSheet.selection.index];
     SETTINGS.sheetJpegQuality = parseFloat(edJpeg.text) || SETTINGS.sheetJpegQuality;
+
+    if (!SETTINGS.exportStickers && !SETTINGS.exportSheet) {
+        alert("Нечего выгружать: сняты обе галки — и стикеры, и лист целиком.");
+        return;
+    }
 
     var excludeSet = {};
     var exclParts = String(edExclude.text || "").split(",");
@@ -125,7 +136,8 @@
         if (nm.length > 0) excludeSet[nm] = true;
     }
 
-    var outFolder = Folder.selectDialog("Куда сохранить PNG?");
+    var outFolder = Folder.selectDialog(SETTINGS.exportStickers
+        ? "Куда сохранить PNG?" : "Куда сохранить JPEG листа?");
     if (!outFolder) return;
 
     // ---------- Прогресс-окно -------------------------------------------
@@ -136,7 +148,9 @@
     win.show();
     function progressCb(idx, total, stage) {
         bar.maxvalue = total || 1; bar.value = idx;
-        status.text = stage ? stage : ("Стикер " + idx + " / " + total);
+        status.text = stage ? stage
+            : (SETTINGS.exportStickers ? ("Стикер " + idx + " / " + total)
+                                       : "Чтение контуров реза…");
         win.update();
     }
 
@@ -144,7 +158,9 @@
     var res = SC_exportDoc(doc, chosenGroup, SETTINGS, excludeSet, outFolder, progressCb);
     win.close();
 
-    var msg = "Готово!\n\nЭкспортировано: " + res.exported + " / " + res.total +
+    var msg = "Готово!\n\n" + (SETTINGS.exportStickers
+              ? ("Экспортировано: " + res.exported + " / " + res.total)
+              : ("Стикеры: пропущены (только лист), контуров реза: " + res.total)) +
               "\nПапка: " + outFolder.fsName;
     if (res.sheets && res.sheets.length) {
         msg += "\n\nЛист целиком: " + res.sheets.length + " файл(ов)";

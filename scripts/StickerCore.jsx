@@ -18,6 +18,7 @@
     SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progressCb)
         -> { exported, total, sheets, sizesPath, sizesWritten, errors }
         Экспорт всех стикеров документа (PNG) + лист целиком (JPEG).
+        settings.exportStickers=false — стикеры пропускаются, идёт только лист.
         UI нет — прогресс через progressCb(idx, total, label).
 ================================================================================
 */
@@ -128,6 +129,10 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     var whiteOutlinePt = settings.whiteOutlineMm * MM2PT;
     var paddingPt      = settings.paddingMm * MM2PT + whiteOutlinePt;
 
+    // Стикеры по отдельности: можно выключить и выгрузить ТОЛЬКО лист целиком.
+    // Это на порядок быстрее, когда PNG стикеров уже собраны прошлым прогоном
+    // или нужен один лист «на посмотреть».
+    var doStickers    = (settings.exportStickers !== false);
     // Лист целиком: по умолчанию включён, чистовой вариант (без линий реза).
     var doSheet       = (settings.exportSheet !== false);
     var sheetMode     = settings.sheetMode || "clean";   // "clean" | "raw" | "both"
@@ -137,8 +142,16 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     if (isNaN(sheetQuality) || sheetQuality === null || sheetQuality === undefined) sheetQuality = 95;
     sheetQuality = Math.max(0, Math.min(100, sheetQuality));
 
+    if (!doStickers && !doSheet) {
+        return { exported: 0, total: 0, sheets: [], sizesPath: null, sizesWritten: false,
+                 errors: ["Нечего выгружать: выключены и стикеры, и лист целиком."] };
+    }
+
     // ---------- Фильтр путей реза ---------------------------------------
     function isCutPath(p) {
+        // В режиме «только лист» цвет реза может быть не выбран вовсе —
+        // тогда контуров реза просто нет, а лист выгружается как есть.
+        if (!chosenGroup) return false;
         try {
             var sc = p.strokeColor;
             if (!sc) return false;
@@ -200,6 +213,14 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
         } else {
             c = new RGBColor(); c.red = 255; c.green = 255; c.blue = 255;
         }
+        return c;
+    }
+    // matteColor у ExportOptionsJPEG — ВСЕГДА RGBColor, независимо от цветового
+    // пространства документа. CMYKColor туда присваивается без исключения, но
+    // потом роняет exportFile с «Ошибка: Internal error» — поэтому отдельная
+    // функция, а не общая makeWhiteColor().
+    function makeRgbWhite() {
+        var c = new RGBColor(); c.red = 255; c.green = 255; c.blue = 255;
         return c;
     }
     function padNum(n, w) { var s = String(n); while (s.length < w) s = "0" + s; return s; }
@@ -361,7 +382,7 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     sheetOpts.optimization     = true;
     sheetOpts.blurAmount       = 0;
     sheetOpts.matte            = true;
-    try { sheetOpts.matteColor = makeWhiteColor(); } catch (eMatte) {}
+    try { sheetOpts.matteColor = makeRgbWhite(); } catch (eMatte) {}
     sheetOpts.horizontalScale  = sheetScale;
     sheetOpts.verticalScale    = sheetScale;
 
@@ -511,15 +532,12 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     }
 
     // Реза нет — стикеров не будет, но лист выгрузить всё равно можно.
-    if (cutPaths.length === 0) {
+    if (cutPaths.length === 0 && doStickers) {
         errors.push("Контуры реза не найдены для выбранного цвета.");
-        exportSheets();
-        return { exported: 0, total: 0, sheets: sheets,
-                 sizesPath: null, sizesWritten: false, errors: errors };
     }
 
-    // ---------- Главный цикл --------------------------------------------
-    for (var idx = 0; idx < cutPaths.length; idx++) {
+    // ---------- Главный цикл (пропускается в режиме «только лист») ------
+    for (var idx = 0; doStickers && idx < cutPaths.length; idx++) {
         if (progressCb) { try { progressCb(idx, cutPaths.length); } catch (ePc) {} }
         var cutItem = cutPaths[idx];
         var tempLayer = null;
@@ -626,12 +644,43 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     }
     if (progressCb) { try { progressCb(cutPaths.length, cutPaths.length); } catch (ePc) {} }
 
+    // Стикеры не выгружали — габарит реза для stickers_area_mm соберём
+    // напрямую из контуров: это только чтение bounds, без дублей графики.
+    if (!doStickers) {
+        for (var cbi = 0; cbi < cutPaths.length; cbi++) {
+            try {
+                var bcb = cutPaths[cbi].geometricBounds;
+                cutBoxes.push([bcb[0], bcb[1], bcb[2], bcb[3]]);
+            } catch (eCb) {}
+        }
+    }
+
     // ---------- Лист целиком --------------------------------------------
     exportSheets();
 
     // ---------- sizes.json ----------------------------------------------
     var sizesPath = outFolder.fsName + "/" + settings.sizesFileName;
     var sizesWritten = false;
+
+    // Режим «только лист» не должен затирать таблицу размеров стикеров,
+    // собранную прошлым полным прогоном: подхватываем её из старого sizes.json.
+    var prevStickers = null;
+    if (!doStickers) {
+        try {
+            var fPrev = new File(sizesPath);
+            if (fPrev.exists) {
+                fPrev.encoding = "UTF-8";
+                if (fPrev.open("r")) {
+                    var prevTxt = fPrev.read(); fPrev.close();
+                    var prevRep = eval("(" + prevTxt + ")");
+                    if (prevRep && prevRep.stickers && prevRep.stickers.length) {
+                        prevStickers = prevRep.stickers;
+                    }
+                }
+            }
+        } catch (ePrev) {}
+    }
+
     try {
         var report = {
             document: doc.name,
@@ -640,13 +689,15 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
                 white_outline_mm:     settings.whiteOutlineMm,
                 padding_mm:           settings.paddingMm,
                 export_scale_percent: settings.exportScalePercent,
+                export_stickers:      doStickers,
                 export_sheet:         doSheet,
                 sheet_mode:           doSheet ? sheetMode : null,
                 sheet_format:         doSheet ? "jpeg" : null,
                 sheet_jpeg_quality:   doSheet ? sheetQuality : null
             },
             sheets:   sheets,
-            stickers: sizes
+            stickers_from_previous_run: prevStickers ? true : false,
+            stickers: prevStickers || sizes
         };
         var f = new File(sizesPath);
         f.encoding = "UTF-8";
