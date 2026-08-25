@@ -7,7 +7,7 @@
   диалог выбора цвета реза + параметры + выходная папка. Логика экспорта одна
   и та же у интерактивного и пакетного (BatchExporter.jsx) режимов.
 
-  На выходе: PNG каждого стикера + PNG всего листа (artboard целиком) +
+  На выходе: PNG каждого стикера + JPEG всего листа (artboard целиком) +
   sizes.json с размерами стикеров и листа.
 
   Запуск: открыть .ai → File → Scripts → Other Script… → StickerExporter.jsx
@@ -36,7 +36,8 @@
         sizesFileName:      "sizes.json",
         exportSheet:        true,
         sheetMode:          "clean",       // "clean" | "raw" | "both"
-        sheetFileName:      "sheet"
+        sheetFileName:      "sheet",
+        sheetJpegQuality:   95             // лист сохраняется в JPEG
     };
 
     if (app.documents.length === 0) {
@@ -97,6 +98,7 @@
     ddSheet.selection = 0;
     ddSheet.preferredSize.width = 160;
     cbSheet.onClick = function () { ddSheet.enabled = cbSheet.value; };
+    var edJpeg = num(pnl, "Качество JPEG листа:", SETTINGS.sheetJpegQuality, "%");
 
     var btnRow = dlg.add("group"); btnRow.alignment = "right";
     btnRow.add("button", undefined, "Отмена", { name: "cancel" });
@@ -112,8 +114,9 @@
     SETTINGS.paddingMm          = parseFloat(edPad.text)   || SETTINGS.paddingMm;
     SETTINGS.exportScalePercent = parseFloat(edScale.text) || SETTINGS.exportScalePercent;
 
-    SETTINGS.exportSheet = cbSheet.value;
-    SETTINGS.sheetMode   = ["clean", "raw", "both"][ddSheet.selection.index];
+    SETTINGS.exportSheet      = cbSheet.value;
+    SETTINGS.sheetMode        = ["clean", "raw", "both"][ddSheet.selection.index];
+    SETTINGS.sheetJpegQuality = parseFloat(edJpeg.text) || SETTINGS.sheetJpegQuality;
 
     var excludeSet = {};
     var exclParts = String(edExclude.text || "").split(",");

@@ -11,7 +11,7 @@
     4. Просит выходную папку.
     5. Поочерёдно открывает каждый .ai, САМ определяет цвет контура реза
        (spot в приоритете, иначе самая массовая обводка) и выгружает стикеры
-       и PNG всего листа в ПОДПАПКУ с именем файла внутри выходной папки.
+       и JPEG всего листа в ПОДПАПКУ с именем файла внутри выходной папки.
        Закрывает без сохранения.
     6. Пишет сводный отчёт batch_report.txt / batch_report.json.
 
@@ -48,7 +48,8 @@
         sizesFileName:      "sizes.json",
         exportSheet:        true,
         sheetMode:          "clean",       // "clean" | "raw" | "both"
-        sheetFileName:      "sheet"
+        sheetFileName:      "sheet",
+        sheetJpegQuality:   95             // лист сохраняется в JPEG
     };
 
     // ---------- 1. Папка с макетами -------------------------------------
@@ -113,6 +114,7 @@
     ddSheet.selection = 0;
     ddSheet.preferredSize.width = 160;
     cbSheet.onClick = function () { ddSheet.enabled = cbSheet.value; };
+    var edJpeg = num(pnl, "Качество JPEG листа:", SETTINGS.sheetJpegQuality, "%");
 
     var btnRow = dlg.add("group"); btnRow.alignment = "right";
     btnRow.add("button", undefined, "Отмена", { name: "cancel" });
@@ -123,8 +125,9 @@
     SETTINGS.paddingMm          = parseFloat(edPad.text)   || SETTINGS.paddingMm;
     SETTINGS.exportScalePercent = parseFloat(edScale.text) || SETTINGS.exportScalePercent;
 
-    SETTINGS.exportSheet = cbSheet.value;
-    SETTINGS.sheetMode   = ["clean", "raw", "both"][ddSheet.selection.index];
+    SETTINGS.exportSheet      = cbSheet.value;
+    SETTINGS.sheetMode        = ["clean", "raw", "both"][ddSheet.selection.index];
+    SETTINGS.sheetJpegQuality = parseFloat(edJpeg.text) || SETTINGS.sheetJpegQuality;
 
     var excludeSet = {};
     var exclParts = String(edExclude.text || "").split(",");
@@ -195,14 +198,16 @@
             // Подпапка по имени файла (перезапись: чистим старые PNG)
             var subF = new Folder(outRoot.fsName + "/" + base);
             if (!subF.exists) subF.create();
-            var oldPngs = subF.getFiles("*.png");
-            for (var op = 0; op < oldPngs.length; op++) {
+            var oldFiles = subF.getFiles("*.png")
+                             .concat(subF.getFiles("*.jpg"))
+                             .concat(subF.getFiles("*.jpeg"));
+            for (var op = 0; op < oldFiles.length; op++) {
                 try {
-                    var oldName = oldPngs[op].name;
-                    if (oldPngs[op] instanceof File &&
+                    var oldName = oldFiles[op].name;
+                    if (oldFiles[op] instanceof File &&
                         (oldName.indexOf(SETTINGS.fileNamePrefix) === 0 ||
                          oldName.indexOf(SETTINGS.sheetFileName) === 0)) {
-                        oldPngs[op].remove();
+                        oldFiles[op].remove();
                     }
                 } catch (eRm) {}
             }
@@ -253,7 +258,9 @@
             padding_mm:           SETTINGS.paddingMm,
             export_scale_percent: SETTINGS.exportScalePercent,
             export_sheet:         SETTINGS.exportSheet,
-            sheet_mode:           SETTINGS.exportSheet ? SETTINGS.sheetMode : null
+            sheet_mode:           SETTINGS.exportSheet ? SETTINGS.sheetMode : null,
+            sheet_format:         SETTINGS.exportSheet ? "jpeg" : null,
+            sheet_jpeg_quality:   SETTINGS.exportSheet ? SETTINGS.sheetJpegQuality : null
         },
         totals: {
             files: aiFiles.length, files_ok: filesOk, files_skipped: filesSkipped,
@@ -323,7 +330,7 @@
         if (r.cut_color) txt.push("    рез: " + r.cut_color);
         txt.push("    стикеров: " + r.exported + " / " + r.total);
         if (r.sheets > 0) {
-            txt.push("    лист: " + r.sheets + " PNG" +
+            txt.push("    лист: " + r.sheets + " JPEG" +
                      (r.sheet_size_mm ? "  (" + r.sheet_size_mm.width + " × " +
                       r.sheet_size_mm.height + " мм)" : ""));
         }

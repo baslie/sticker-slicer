@@ -17,7 +17,7 @@
         Авто-выбор контура реза: spot в приоритете, иначе самая массовая группа.
     SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progressCb)
         -> { exported, total, sheets, sizesPath, sizesWritten, errors }
-        Экспорт всех стикеров документа + PNG всего листа (artboard целиком).
+        Экспорт всех стикеров документа (PNG) + лист целиком (JPEG).
         UI нет — прогресс через progressCb(idx, total, label).
 ================================================================================
 */
@@ -132,6 +132,10 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     var doSheet       = (settings.exportSheet !== false);
     var sheetMode     = settings.sheetMode || "clean";   // "clean" | "raw" | "both"
     var sheetBaseName = settings.sheetFileName || "sheet";
+    // Лист идёт в JPEG: PNG целого листа весит слишком много.
+    var sheetQuality  = settings.sheetJpegQuality;
+    if (isNaN(sheetQuality) || sheetQuality === null || sheetQuality === undefined) sheetQuality = 95;
+    sheetQuality = Math.max(0, Math.min(100, sheetQuality));
 
     // ---------- Фильтр путей реза ---------------------------------------
     function isCutPath(p) {
@@ -345,6 +349,22 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     exportOpts.horizontalScale  = settings.exportScalePercent;
     exportOpts.verticalScale    = settings.exportScalePercent;
 
+    // ---------- Опции экспорта листа (JPEG) -----------------------------
+    // Прозрачности в JPEG нет: пустое поле листа заливается белым (matte).
+    // Масштаб JPEG в Illustrator ограничен 776.19 % — подрезаем, чтобы не
+    // ронять экспорт на больших значениях.
+    var sheetScale = Math.min(settings.exportScalePercent, 776);
+    var sheetOpts = new ExportOptionsJPEG();
+    sheetOpts.qualitySetting   = sheetQuality;
+    sheetOpts.antiAliasing     = true;
+    sheetOpts.artBoardClipping = true;
+    sheetOpts.optimization     = true;
+    sheetOpts.blurAmount       = 0;
+    sheetOpts.matte            = true;
+    try { sheetOpts.matteColor = makeWhiteColor(); } catch (eMatte) {}
+    sheetOpts.horizontalScale  = sheetScale;
+    sheetOpts.verticalScale    = sheetScale;
+
     // ---------- Видимости слоёв (запомнить/восстановить) ----------------
     var origLayerVisibility = [];
     for (var lv = 0; lv < doc.layers.length; lv++) {
@@ -455,8 +475,8 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
                 doc.artboards.setActiveArtboardIndex(ai);
 
                 var name = sheetBaseName + (mode === "raw" ? "_raw" : "") +
-                           (many ? "_" + padNum(ai + 1, 2) : "") + ".png";
-                doc.exportFile(new File(outFolder.fsName + "/" + name), ExportType.PNG24, exportOpts);
+                           (many ? "_" + padNum(ai + 1, 2) : "") + ".jpg";
+                doc.exportFile(new File(outFolder.fsName + "/" + name), ExportType.JPEG, sheetOpts);
 
                 var rec = {
                     file: name,
@@ -621,7 +641,9 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
                 padding_mm:           settings.paddingMm,
                 export_scale_percent: settings.exportScalePercent,
                 export_sheet:         doSheet,
-                sheet_mode:           doSheet ? sheetMode : null
+                sheet_mode:           doSheet ? sheetMode : null,
+                sheet_format:         doSheet ? "jpeg" : null,
+                sheet_jpeg_quality:   doSheet ? sheetQuality : null
             },
             sheets:   sheets,
             stickers: sizes
