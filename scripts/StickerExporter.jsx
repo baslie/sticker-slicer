@@ -7,6 +7,9 @@
   диалог выбора цвета реза + параметры + выходная папка. Логика экспорта одна
   и та же у интерактивного и пакетного (BatchExporter.jsx) режимов.
 
+  На выходе: PNG каждого стикера + PNG всего листа (artboard целиком) +
+  sizes.json с размерами стикеров и листа.
+
   Запуск: открыть .ai → File → Scripts → Other Script… → StickerExporter.jsx
 ================================================================================
 */
@@ -30,7 +33,10 @@
         paddingMm:          1.0,
         exportScalePercent: 200,
         fileNamePrefix:     "sticker_",
-        sizesFileName:      "sizes.json"
+        sizesFileName:      "sizes.json",
+        exportSheet:        true,
+        sheetMode:          "clean",       // "clean" | "raw" | "both"
+        sheetFileName:      "sheet"
     };
 
     if (app.documents.length === 0) {
@@ -82,6 +88,16 @@
     var edExclude = grpExcl.add("edittext", undefined, "MARKS CUT");
     edExclude.preferredSize.width = 160;
 
+    var grpSheet = pnl.add("group");
+    var cbSheet = grpSheet.add("checkbox", undefined, "Экспортировать лист целиком");
+    cbSheet.value = SETTINGS.exportSheet;
+    cbSheet.preferredSize.width = 220;
+    var ddSheet = grpSheet.add("dropdownlist", undefined,
+        ["чистовой (без линий реза)", "как в макете", "оба варианта"]);
+    ddSheet.selection = 0;
+    ddSheet.preferredSize.width = 160;
+    cbSheet.onClick = function () { ddSheet.enabled = cbSheet.value; };
+
     var btnRow = dlg.add("group"); btnRow.alignment = "right";
     btnRow.add("button", undefined, "Отмена", { name: "cancel" });
     btnRow.add("button", undefined, "Экспортировать", { name: "ok" });
@@ -95,6 +111,9 @@
     SETTINGS.whiteOutlineMm     = parseFloat(edWhite.text) || SETTINGS.whiteOutlineMm;
     SETTINGS.paddingMm          = parseFloat(edPad.text)   || SETTINGS.paddingMm;
     SETTINGS.exportScalePercent = parseFloat(edScale.text) || SETTINGS.exportScalePercent;
+
+    SETTINGS.exportSheet = cbSheet.value;
+    SETTINGS.sheetMode   = ["clean", "raw", "both"][ddSheet.selection.index];
 
     var excludeSet = {};
     var exclParts = String(edExclude.text || "").split(",");
@@ -112,9 +131,9 @@
     var status = win.add("statictext", undefined, "Подготовка…"); status.preferredSize.width = 340;
     var bar = win.add("progressbar", undefined, 0, 1); bar.preferredSize.width = 340;
     win.show();
-    function progressCb(idx, total) {
-        bar.maxvalue = total; bar.value = idx;
-        status.text = "Стикер " + idx + " / " + total;
+    function progressCb(idx, total, stage) {
+        bar.maxvalue = total || 1; bar.value = idx;
+        status.text = stage ? stage : ("Стикер " + idx + " / " + total);
         win.update();
     }
 
@@ -124,7 +143,19 @@
 
     var msg = "Готово!\n\nЭкспортировано: " + res.exported + " / " + res.total +
               "\nПапка: " + outFolder.fsName;
-    if (res.sizesWritten) msg += "\nРазмеры: " + res.sizesPath;
+    if (res.sheets && res.sheets.length) {
+        msg += "\n\nЛист целиком: " + res.sheets.length + " файл(ов)";
+        for (var si = 0; si < res.sheets.length; si++) {
+            var sh = res.sheets[si];
+            msg += "\n  " + sh.file + " — " + sh.sheet_size_mm.width + " × " +
+                   sh.sheet_size_mm.height + " мм";
+            if (sh.stickers_area_mm) {
+                msg += " (стикеры: " + sh.stickers_area_mm.width + " × " +
+                       sh.stickers_area_mm.height + " мм)";
+            }
+        }
+    }
+    if (res.sizesWritten) msg += "\n\nРазмеры: " + res.sizesPath;
     if (res.errors && res.errors.length) {
         msg += "\n\nОшибок: " + res.errors.length + "\n" + res.errors.slice(0, 5).join("\n");
         if (res.errors.length > 5) msg += "\n…ещё " + (res.errors.length - 5);

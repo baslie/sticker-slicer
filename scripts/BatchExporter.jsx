@@ -10,8 +10,9 @@
     3. Просит параметры экспорта (один раз на весь прогон).
     4. Просит выходную папку.
     5. Поочерёдно открывает каждый .ai, САМ определяет цвет контура реза
-       (spot в приоритете, иначе самая массовая обводка) и выгружает стикеры в
-       ПОДПАПКУ с именем файла внутри выходной папки. Закрывает без сохранения.
+       (spot в приоритете, иначе самая массовая обводка) и выгружает стикеры
+       и PNG всего листа в ПОДПАПКУ с именем файла внутри выходной папки.
+       Закрывает без сохранения.
     6. Пишет сводный отчёт batch_report.txt / batch_report.json.
 
   Работает и когда в папке один файл (N=1).
@@ -44,7 +45,10 @@
         paddingMm:          1.0,
         exportScalePercent: 200,
         fileNamePrefix:     "sticker_",
-        sizesFileName:      "sizes.json"
+        sizesFileName:      "sizes.json",
+        exportSheet:        true,
+        sheetMode:          "clean",       // "clean" | "raw" | "both"
+        sheetFileName:      "sheet"
     };
 
     // ---------- 1. Папка с макетами -------------------------------------
@@ -100,6 +104,16 @@
     var edExclude = grpExcl.add("edittext", undefined, "MARKS CUT");
     edExclude.preferredSize.width = 160;
 
+    var grpSheet = pnl.add("group");
+    var cbSheet = grpSheet.add("checkbox", undefined, "Экспортировать лист целиком");
+    cbSheet.value = SETTINGS.exportSheet;
+    cbSheet.preferredSize.width = 220;
+    var ddSheet = grpSheet.add("dropdownlist", undefined,
+        ["чистовой (без линий реза)", "как в макете", "оба варианта"]);
+    ddSheet.selection = 0;
+    ddSheet.preferredSize.width = 160;
+    cbSheet.onClick = function () { ddSheet.enabled = cbSheet.value; };
+
     var btnRow = dlg.add("group"); btnRow.alignment = "right";
     btnRow.add("button", undefined, "Отмена", { name: "cancel" });
     btnRow.add("button", undefined, "Дальше — выбрать папку вывода", { name: "ok" });
@@ -108,6 +122,9 @@
     SETTINGS.whiteOutlineMm     = parseFloat(edWhite.text) || SETTINGS.whiteOutlineMm;
     SETTINGS.paddingMm          = parseFloat(edPad.text)   || SETTINGS.paddingMm;
     SETTINGS.exportScalePercent = parseFloat(edScale.text) || SETTINGS.exportScalePercent;
+
+    SETTINGS.exportSheet = cbSheet.value;
+    SETTINGS.sheetMode   = ["clean", "raw", "both"][ddSheet.selection.index];
 
     var excludeSet = {};
     var exclParts = String(edExclude.text || "").split(",");
@@ -147,7 +164,8 @@
     app.userInteractionLevel = UserInteractionLevel.DONTDISPLAYALERTS;
 
     var results = [];
-    var totalExported = 0, filesOk = 0, filesSkipped = 0, filesWithErrors = 0;
+    var totalExported = 0, totalSheets = 0;
+    var filesOk = 0, filesSkipped = 0, filesWithErrors = 0;
 
     // ---------- 5. Главный цикл по файлам -------------------------------
     for (var fi = 0; fi < aiFiles.length; fi++) {
@@ -157,6 +175,7 @@
         stStatus.text = "Открываю…"; bar.value = 0; win.update();
 
         var rec = { file: file.name, cut_color: null, exported: 0, total: 0,
+                    sheets: 0, sheet_size_mm: null,
                     skipped: false, reason: null, errors: [] };
         var d = null;
         try {
@@ -179,8 +198,10 @@
             var oldPngs = subF.getFiles("*.png");
             for (var op = 0; op < oldPngs.length; op++) {
                 try {
+                    var oldName = oldPngs[op].name;
                     if (oldPngs[op] instanceof File &&
-                        oldPngs[op].name.indexOf(SETTINGS.fileNamePrefix) === 0) {
+                        (oldName.indexOf(SETTINGS.fileNamePrefix) === 0 ||
+                         oldName.indexOf(SETTINGS.sheetFileName) === 0)) {
                         oldPngs[op].remove();
                     }
                 } catch (eRm) {}
@@ -189,9 +210,10 @@
             // Прогресс по стикерам этого файла
             var fileLabel = file.name;
             var cb = (function (label) {
-                return function (idx, total) {
-                    bar.maxvalue = total; bar.value = idx;
-                    stStatus.text = label + ": стикер " + idx + " / " + total;
+                return function (idx, total, stage) {
+                    bar.maxvalue = total || 1; bar.value = idx;
+                    stStatus.text = label + ": " +
+                        (stage ? stage : ("стикер " + idx + " / " + total));
                     win.update();
                 };
             })(fileLabel);
@@ -200,6 +222,9 @@
             rec.exported = res.exported;
             rec.total = res.total;
             rec.errors = res.errors || [];
+            rec.sheets = (res.sheets || []).length;
+            if (rec.sheets > 0) rec.sheet_size_mm = res.sheets[0].sheet_size_mm;
+            totalSheets += rec.sheets;
             totalExported += res.exported;
             if (rec.errors.length) filesWithErrors++;
             if (res.exported > 0) filesOk++;
@@ -226,11 +251,14 @@
         settings: {
             white_outline_mm:     SETTINGS.whiteOutlineMm,
             padding_mm:           SETTINGS.paddingMm,
-            export_scale_percent: SETTINGS.exportScalePercent
+            export_scale_percent: SETTINGS.exportScalePercent,
+            export_sheet:         SETTINGS.exportSheet,
+            sheet_mode:           SETTINGS.exportSheet ? SETTINGS.sheetMode : null
         },
         totals: {
             files: aiFiles.length, files_ok: filesOk, files_skipped: filesSkipped,
-            files_with_errors: filesWithErrors, stickers_total: totalExported
+            files_with_errors: filesWithErrors, stickers_total: totalExported,
+            sheets_total: totalSheets
         },
         results: results
     };
@@ -285,7 +313,8 @@
     txt.push("");
     txt.push("ИТОГО: файлов " + report.totals.files + ", успешно " + report.totals.files_ok +
              ", пропущено " + report.totals.files_skipped + ", с ошибками " + report.totals.files_with_errors +
-             ", стикеров всего " + report.totals.stickers_total);
+             ", стикеров всего " + report.totals.stickers_total +
+             ", листов " + report.totals.sheets_total);
     txt.push("");
     for (var ri = 0; ri < results.length; ri++) {
         var r = results[ri];
@@ -293,6 +322,11 @@
         txt.push(head);
         if (r.cut_color) txt.push("    рез: " + r.cut_color);
         txt.push("    стикеров: " + r.exported + " / " + r.total);
+        if (r.sheets > 0) {
+            txt.push("    лист: " + r.sheets + " PNG" +
+                     (r.sheet_size_mm ? "  (" + r.sheet_size_mm.width + " × " +
+                      r.sheet_size_mm.height + " мм)" : ""));
+        }
         if (r.reason) txt.push("    причина: " + r.reason);
         for (var ei = 0; ei < r.errors.length && ei < 5; ei++) txt.push("    ошибка: " + r.errors[ei]);
         if (r.errors.length > 5) txt.push("    …ещё ошибок: " + (r.errors.length - 5));
@@ -310,6 +344,7 @@
               "\n  пропущено: " + report.totals.files_skipped +
               "\n  с ошибками: " + report.totals.files_with_errors +
               "\nСтикеров всего: " + report.totals.stickers_total +
+              "\nЛистов всего: " + report.totals.sheets_total +
               "\n\nВыход: " + outRoot.fsName;
     if (okTxt)  msg += "\nОтчёт: " + txtPath;
     if (!okJson && !okTxt) msg += "\n\n(не удалось записать отчёт — проверь права на папку)";

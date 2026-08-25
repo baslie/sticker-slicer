@@ -16,8 +16,9 @@
     SC_pickCutCandidate(groups, keysOrder) -> chosenKey | null
         Авто-выбор контура реза: spot в приоритете, иначе самая массовая группа.
     SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progressCb)
-        -> { exported, total, sizesPath, sizesWritten, errors }
-        Экспорт всех стикеров документа. UI нет — прогресс через progressCb(idx,total).
+        -> { exported, total, sheets, sizesPath, sizesWritten, errors }
+        Экспорт всех стикеров документа + PNG всего листа (artboard целиком).
+        UI нет — прогресс через progressCb(idx, total, label).
 ================================================================================
 */
 
@@ -126,6 +127,11 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     var MM2PT = SC_MM2PT;
     var whiteOutlinePt = settings.whiteOutlineMm * MM2PT;
     var paddingPt      = settings.paddingMm * MM2PT + whiteOutlinePt;
+
+    // Лист целиком: по умолчанию включён, чистовой вариант (без линий реза).
+    var doSheet       = (settings.exportSheet !== false);
+    var sheetMode     = settings.sheetMode || "clean";   // "clean" | "raw" | "both"
+    var sheetBaseName = settings.sheetFileName || "sheet";
 
     // ---------- Фильтр путей реза ---------------------------------------
     function isCutPath(p) {
@@ -328,11 +334,7 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
         collectCut(layCut, cutPaths);
     }
 
-    var errors = [], exported = 0, sizes = [];
-    if (cutPaths.length === 0) {
-        return { exported: 0, total: 0, sizesPath: null, sizesWritten: false,
-                 errors: ["Контуры реза не найдены для выбранного цвета."] };
-    }
+    var errors = [], exported = 0, sizes = [], sheets = [], cutBoxes = [];
 
     // ---------- Опции экспорта PNG --------------------------------------
     var exportOpts = new ExportOptionsPNG24();
@@ -356,6 +358,146 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
         }
     }
 
+    // ====================================================================
+    //  Лист целиком: PNG всего artboard теми же настройками, что и стикеры
+    // ====================================================================
+
+    // Запомнить свойство объекта, чтобы вернуть его после экспорта листа.
+    function remember(list, obj, prop) {
+        try { list.push({ obj: obj, prop: prop, value: obj[prop] }); } catch (e) {}
+    }
+    // Гасим обводку у живого пути: порядок важен — при восстановлении
+    // (в обратном порядке) сначала вернётся stroked, потом цвет и толщина.
+    function unstrokeReversible(path, undoList) {
+        remember(undoList, path, "strokeWidth");
+        remember(undoList, path, "strokeColor");
+        remember(undoList, path, "stroked");
+        try { path.stroked = false; } catch (e) {}
+    }
+    function restoreAll(list) {
+        for (var i = list.length - 1; i >= 0; i--) {
+            try { list[i].obj[list[i].prop] = list[i].value; } catch (e) {}
+        }
+    }
+
+    // Снять обводку cut-цвета по всему контейнеру ОБРАТИМО: для листа линии
+    // реза убираем из живого документа, а после экспорта возвращаем на место.
+    // В отличие от stripCutStrokes заходит и в подслои (layer.layers).
+    function stripCutStrokesTracked(container, undoList) {
+        try {
+            for (var i = 0; i < container.pathItems.length; i++) {
+                var p = container.pathItems[i];
+                if (!isCutPath(p)) continue;
+                unstrokeReversible(p, undoList);
+            }
+        } catch (e1) {}
+        try {
+            for (var c = 0; c < container.compoundPathItems.length; c++) {
+                var cp = container.compoundPathItems[c];
+                for (var k = 0; k < cp.pathItems.length; k++) {
+                    var cpp = cp.pathItems[k];
+                    if (!isCutPath(cpp)) continue;
+                    unstrokeReversible(cpp, undoList);
+                }
+            }
+        } catch (e2) {}
+        try {
+            for (var g = 0; g < container.groupItems.length; g++) {
+                var grp = container.groupItems[g];
+                try { if (grp.locked) { remember(undoList, grp, "locked"); grp.locked = false; } } catch (e) {}
+                stripCutStrokesTracked(grp, undoList);
+            }
+        } catch (e3) {}
+        try {
+            if (container.layers) {
+                for (var sl = 0; sl < container.layers.length; sl++) {
+                    var sub = container.layers[sl];
+                    if (!sub.visible) continue;
+                    if (sub.locked) { remember(undoList, sub, "locked"); try { sub.locked = false; } catch (e) {} }
+                    stripCutStrokesTracked(sub, undoList);
+                }
+            }
+        } catch (e4) {}
+    }
+
+    // Габарит всех контуров реза, попавших на этот artboard (в pt).
+    function cutAreaOnArtboard(abRect) {
+        var box = null;
+        for (var i = 0; i < cutBoxes.length; i++) {
+            var cb = cutBoxes[i];
+            if (!bboxIntersect(cb, abRect)) continue;
+            if (!box) { box = [cb[0], cb[1], cb[2], cb[3]]; continue; }
+            box[0] = Math.min(box[0], cb[0]); box[1] = Math.max(box[1], cb[1]);
+            box[2] = Math.max(box[2], cb[2]); box[3] = Math.min(box[3], cb[3]);
+        }
+        return box;
+    }
+
+    // mode: "clean" — без линий реза и без исключённых слоёв (как печатается);
+    //       "raw"   — artboard как есть, со всем содержимым макета.
+    function exportSheetVariant(mode) {
+        var undoList = [];
+        var savedAb = doc.artboards.getActiveArtboardIndex();
+        try {
+            if (mode === "clean") {
+                for (var l = 0; l < doc.layers.length; l++) {
+                    var lay = doc.layers[l];
+                    if (excludeSet[lay.name]) { try { lay.visible = false; } catch (e) {} continue; }
+                    if (!lay.visible) continue;
+                    try { lay.locked = false; } catch (e) {}
+                    stripCutStrokesTracked(lay, undoList);
+                }
+            }
+            var many = doc.artboards.length > 1;
+            for (var ai = 0; ai < doc.artboards.length; ai++) {
+                var ab = doc.artboards[ai];
+                var abRect = ab.artboardRect;
+                doc.artboards.setActiveArtboardIndex(ai);
+
+                var name = sheetBaseName + (mode === "raw" ? "_raw" : "") +
+                           (many ? "_" + padNum(ai + 1, 2) : "") + ".png";
+                doc.exportFile(new File(outFolder.fsName + "/" + name), ExportType.PNG24, exportOpts);
+
+                var rec = {
+                    file: name,
+                    mode: mode,
+                    artboard: ab.name,
+                    sheet_size_mm: { width:  round1(ptToMm(abRect[2] - abRect[0])),
+                                     height: round1(ptToMm(abRect[1] - abRect[3])) }
+                };
+                var ca = cutAreaOnArtboard(abRect);
+                if (ca) {
+                    rec.stickers_area_mm = { width:  round1(ptToMm(ca[2] - ca[0])),
+                                             height: round1(ptToMm(ca[1] - ca[3])) };
+                }
+                sheets.push(rec);
+            }
+        } catch (eSheet) {
+            errors.push("лист (" + mode + "): " + eSheet);
+        } finally {
+            restoreAll(undoList);
+            try { doc.artboards.setActiveArtboardIndex(savedAb); } catch (e) {}
+            restoreLayerVisibility();
+        }
+    }
+
+    function exportSheets() {
+        if (!doSheet) return;
+        if (progressCb) {
+            try { progressCb(cutPaths.length, cutPaths.length, "Лист целиком…"); } catch (ePc) {}
+        }
+        if (sheetMode === "clean" || sheetMode === "both") exportSheetVariant("clean");
+        if (sheetMode === "raw"   || sheetMode === "both") exportSheetVariant("raw");
+    }
+
+    // Реза нет — стикеров не будет, но лист выгрузить всё равно можно.
+    if (cutPaths.length === 0) {
+        errors.push("Контуры реза не найдены для выбранного цвета.");
+        exportSheets();
+        return { exported: 0, total: 0, sheets: sheets,
+                 sizesPath: null, sizesWritten: false, errors: errors };
+    }
+
     // ---------- Главный цикл --------------------------------------------
     for (var idx = 0; idx < cutPaths.length; idx++) {
         if (progressCb) { try { progressCb(idx, cutPaths.length); } catch (ePc) {} }
@@ -367,6 +509,7 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
         try {
             var b = cutItem.geometricBounds;
             var rect = [ b[0] - paddingPt, b[1] + paddingPt, b[2] + paddingPt, b[3] - paddingPt ];
+            cutBoxes.push([ b[0], b[1], b[2], b[3] ]);
 
             var cut_w_mm = round1(ptToMm(b[2] - b[0]));
             var cut_h_mm = round1(ptToMm(b[1] - b[3]));
@@ -463,6 +606,9 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
     }
     if (progressCb) { try { progressCb(cutPaths.length, cutPaths.length); } catch (ePc) {} }
 
+    // ---------- Лист целиком --------------------------------------------
+    exportSheets();
+
     // ---------- sizes.json ----------------------------------------------
     var sizesPath = outFolder.fsName + "/" + settings.sizesFileName;
     var sizesWritten = false;
@@ -473,8 +619,11 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
             settings: {
                 white_outline_mm:     settings.whiteOutlineMm,
                 padding_mm:           settings.paddingMm,
-                export_scale_percent: settings.exportScalePercent
+                export_scale_percent: settings.exportScalePercent,
+                export_sheet:         doSheet,
+                sheet_mode:           doSheet ? sheetMode : null
             },
+            sheets:   sheets,
             stickers: sizes
         };
         var f = new File(sizesPath);
@@ -483,6 +632,6 @@ function SC_exportDoc(doc, chosenGroup, settings, excludeSet, outFolder, progres
         else errors.push("sizes.json: не удалось открыть файл на запись");
     } catch (eJson) { errors.push("sizes.json: " + eJson); }
 
-    return { exported: exported, total: cutPaths.length, sizesPath: sizesPath,
-             sizesWritten: sizesWritten, errors: errors };
+    return { exported: exported, total: cutPaths.length, sheets: sheets,
+             sizesPath: sizesPath, sizesWritten: sizesWritten, errors: errors };
 }
